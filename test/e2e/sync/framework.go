@@ -12,16 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package e2e
+package sync
 
 import (
-	"testing"
-
-	_ "github.com/ppc64le-cloud/pvsadm/test/e2e/qcow2ova"
-	_ "github.com/ppc64le-cloud/pvsadm/test/e2e/rootcmd"
-	_ "github.com/ppc64le-cloud/pvsadm/test/e2e/sync"
+	"github.com/ppc64le-cloud/pvsadm/test/e2e/framework"
 )
 
-func TestE2E(t *testing.T) {
-	RunE2ETests(t)
+const (
+	command = "sync"
+)
+
+// CMDDescribe annotates the test with the subcommand label.
+func CMDDescribe(text string, body func()) bool {
+	return framework.Describe(command, text, body)
 }
