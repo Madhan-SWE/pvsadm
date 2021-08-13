@@ -16,14 +16,43 @@ package sync
 
 import (
 	"fmt"
+	"io/ioutil"
 	"math/rand"
+	"os"
+	"strings"
 	"time"
 
+	"github.com/IBM-Cloud/bluemix-go/api/resource/resourcev1/management"
+	"github.com/IBM-Cloud/bluemix-go/api/resource/resourcev2/controllerv2"
+	"github.com/IBM/ibm-cos-sdk-go/aws"
+	"github.com/IBM/ibm-cos-sdk-go/service/s3"
+	"github.com/ppc64le-cloud/pvsadm/pkg/client"
 	"github.com/ppc64le-cloud/pvsadm/pkg/utils"
 	"github.com/ppc64le-cloud/pvsadm/test/e2e/framework"
+	"gopkg.in/yaml.v2"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+)
+
+var (
+	APIKey      = string(os.Getenv("IBMCLOUD_API_KEY"))
+	FolderName  = "folder" + strings.ToLower(generateRandomString(6))
+	PlanSlice   = []string{"smart", "standard", "vault", "cold"}
+	RegionSlice = []string{"us-east", "jp-tok", "us-south"}
+)
+
+const (
+	ServiceType            = "cloud-object-storage"
+	ResourceGroupAPIRegion = "global"
+	ServicePlan            = "standard"
+	ResourceGrp            = "powervs-ipi-resource-group"
+	Debug                  = false
+	Recursive              = false
+	InstanceType           = "service_instance"
+	NoOfSources            = 2
+	NoOfTargetsPerSource   = 2
+	NoOfObjects            = 5
 )
 
 type Spec []struct {
@@ -50,7 +79,6 @@ func runSyncCMD(args ...string) (int, string, string) {
 	return utils.RunCMD("pvsadm", args...)
 }
 
-// Returns an int >= min, < max
 func randomInt(min, max int) int {
 	return min + rand.Intn(max-min)
 }
@@ -61,83 +89,327 @@ func generateRandomString(length int) string {
 	for i := 0; i < length; i++ {
 		bytes[i] = byte(randomInt(65, 91))
 	}
-	fmt.Println(string(bytes))
 	return string(bytes)
 }
 
 func generateStruct() Spec {
 
-	planSlice := []string{"smart", "standard", "lite"}
-	regionSlice := []string{"us-east", "us-west", "jp-tok", "us-south"}
-	noOfSources := 2
-	noOfTargetsPerSource := 3
-	var spec Spec
-	spec = make(Spec, noOfSources)
+	fmt.Println("STEP: Generating Struct")
+	spec := make(Spec, NoOfSources)
 
-	for src := 0; src < noOfSources; src++ {
-		spec[src].Source.Bucket = "Bucket-" + generateRandomString(6)
+	for src := 0; src < NoOfSources; src++ {
+		spec[src].Source.Bucket = "bucket-" + strings.ToLower(generateRandomString(6))
 		spec[src].Source.Cos = "COS-Test-" + generateRandomString(6)
 		spec[src].Source.Object = ""
-		spec[src].Source.Plan = planSlice[randomInt(0, 3)]
-		spec[src].Source.Region = regionSlice[randomInt(0, 3)]
-		spec[src].Target = make(Target, noOfTargetsPerSource)
+		spec[src].Source.Plan = PlanSlice[randomInt(0, len(PlanSlice))]
+		spec[src].Source.Region = RegionSlice[randomInt(0, len(RegionSlice))]
+		spec[src].Target = make(Target, NoOfTargetsPerSource)
 
-		for tgt := 0; tgt < noOfTargetsPerSource; tgt++ {
-			spec[src].Target[tgt].Bucket = "Bucket-" + generateRandomString(6)
-			spec[src].Target[tgt].Plan = planSlice[randomInt(0, 3)]
-			spec[src].Target[tgt].Region = regionSlice[randomInt(0, 3)]
+		for tgt := 0; tgt < NoOfTargetsPerSource; tgt++ {
+			spec[src].Target[tgt].Bucket = "bucket-" + strings.ToLower(generateRandomString(6))
+			spec[src].Target[tgt].Plan = PlanSlice[randomInt(0, len(PlanSlice))]
+			spec[src].Target[tgt].Region = RegionSlice[randomInt(0, len(RegionSlice))]
 		}
 	}
-
 	return spec
-
-	/*
-
-		fmt.Println("\n\n\n\n\n\n _____________ Called ____________ \n\n\n\n\n\n")
-		fmt.Println(spec)
-		fmt.Println("\n\n\n\n\n\n _____________ Called ____________ \n\n\n\n\n\n")
-
-		d, err := yaml.Marshal(&spec)
-		if err != nil {
-			log.Fatalf("error: %v", err)
-		}
-		fmt.Printf("--- m dump:\n%s\n\n", string(d))
-
-		/*
-				var source Source
-				var target := make(Target, noOnoOfTargetsPerSource)
-
-				for src:=0; src<noOfSources; src++{
-			        source = Source{
-						Bucket: "Bucket-" + generateRandomString(6),
-						Cos: "COS-Test-" + generateRandomString(6),
-						Object: "",
-						Plan: planSlice[randomInt(0, 3)],
-						Region: regionSlice[randomInt(0, 3)],
-					}
-					for tgt:=0; target<noOfTargetsPerSource; tgt++{
-						target[tgt].Bucket = "Bucket-" + generateRandomString(6),
-						target[tgt].Plan = planSlice[randomInt(0, 3)],
-						target[tgt].Region = Region: regionSlice[randomInt(0, 3)],
-					}
-					spec[src].Source = source
-					spec[src].Target = target
-				}
-
-				fmt.Println("\n\n\n\n\n\n ________Generate_____ Called ____________ \n\n\n\n\n\n", srcRegionSlice, destRegionSlice)
-	*/
 }
 
-func createResources(spec Spec) bool {
+func createSpecFile(spec Spec) bool {
+
+	fmt.Println("STEP: Creating Spec file")
+
+	f, err := os.Create("spec.yaml")
+	if err != nil {
+		fmt.Println("ERROR: ", err)
+		return false
+	}
+	defer f.Close()
+
+	specString, merr := yaml.Marshal(&spec)
+	if merr != nil {
+		fmt.Println("ERROR: ", merr)
+		return false
+	}
+	_, err2 := f.WriteString(string(specString))
+	if err2 != nil {
+		fmt.Println("ERROR: ", err2)
+		return false
+	}
+
+	fmt.Println(string(specString))
 	return true
 }
 
-func createRequiredBuckets() bool {
-	fmt.Println("\n\n\n\n\n\n _____________ Called ____________ \n\n\n\n\n\n")
-	fmt.Println(generateRandomString(10))
-	var spec Spec
-	spec = generateStruct()
-	fmt.Println("________", spec)
+func createCOSInstances(spec Spec) bool {
+	fmt.Println("STEP: Creating COS instances")
+
+	bxCli, err := client.NewClientWithEnv(APIKey, client.DefaultEnv, Debug)
+	if err != nil {
+		fmt.Println("ERROR: ", err)
+		return false
+	}
+
+	resourceGroupQuery := management.ResourceGroupQuery{
+		AccountID: bxCli.User.Account,
+	}
+
+	resGrpList, err := bxCli.ResGroupAPI.List(&resourceGroupQuery)
+	if err != nil {
+		fmt.Println("ERROR: ", err)
+		return false
+	}
+
+	var resourceGroupNames []string
+	for _, resgrp := range resGrpList {
+		resourceGroupNames = append(resourceGroupNames, resgrp.Name)
+	}
+
+	for _, src := range spec {
+		fmt.Println("STEP: Creating COS instance", src.Cos)
+		_, err = bxCli.CreateServiceInstance(src.Cos, ServiceType, ServicePlan,
+			ResourceGrp, ResourceGroupAPIRegion)
+		if err != nil {
+			fmt.Println("ERROR: ", err)
+			return false
+		}
+	}
+
+	return true
+
+}
+
+func deleteCOSInstances(spec Spec) bool {
+
+	fmt.Println("STEP: Deleting COS instances")
+	bxCli, err := client.NewClientWithEnv(APIKey, client.DefaultEnv, Debug)
+	if err != nil {
+		fmt.Println("ERROR: ", err)
+		return false
+	}
+
+	for _, src := range spec {
+		fmt.Println("STEP: Deleting COS instance", src.Cos)
+
+		svcs, err := bxCli.ResourceClientV2.ListInstances(controllerv2.ServiceInstanceQuery{
+			Type: InstanceType,
+			Name: src.Cos,
+		})
+
+		if err != nil {
+			fmt.Println("ERROR: ", err)
+			return false
+		}
+
+		for _, svc := range svcs {
+			if svc.Name == src.Cos {
+				err = bxCli.DeleteServiceInstance(svc.ID, Recursive)
+				if err != nil {
+					fmt.Println("ERROR: ", err)
+					return false
+				}
+				fmt.Println("Service Instance Deleted: ", svc.Name)
+			}
+		}
+
+	}
+
+	return true
+}
+
+func createBuckets(spec Spec) bool {
+
+	fmt.Println("STEP: Create Required Buckets")
+	bxCli, err := client.NewClientWithEnv(APIKey, client.DefaultEnv, Debug)
+	if err != nil {
+		fmt.Println("ERROR: ", err)
+		return false
+	}
+
+	for _, src := range spec {
+		s3Cli, err := client.NewS3Client(bxCli, src.Cos, src.Region)
+		if err != nil {
+			fmt.Println("ERROR: ", err)
+			return false
+		}
+
+		fmt.Println("STEP: Create Required Bucket", src.Bucket)
+		_, err = s3Cli.S3Session.CreateBucket(&s3.CreateBucketInput{
+			Bucket: aws.String(src.Bucket),
+			CreateBucketConfiguration: &s3.CreateBucketConfiguration{
+				LocationConstraint: aws.String(src.Region + "-" + src.Plan),
+			},
+		})
+		if err != nil {
+			fmt.Println("ERROR: ", err)
+			return false
+		}
+
+		err = s3Cli.S3Session.WaitUntilBucketExists(&s3.HeadBucketInput{
+			Bucket: aws.String(src.Bucket),
+		})
+
+		if err != nil {
+			fmt.Println("ERROR: ", err)
+			return false
+		}
+
+		for _, tgt := range src.Target {
+			s3Cli, err := client.NewS3Client(bxCli, src.Cos, tgt.Region)
+			if err != nil {
+				fmt.Println("ERROR: ", err)
+				return false
+			}
+
+			fmt.Println("STEP: Create Required Bucket", tgt.Bucket)
+			_, err = s3Cli.S3Session.CreateBucket(&s3.CreateBucketInput{
+				Bucket: aws.String(tgt.Bucket),
+				CreateBucketConfiguration: &s3.CreateBucketConfiguration{
+					LocationConstraint: aws.String(tgt.Region + "-" + tgt.Plan),
+				},
+			})
+
+			if err != nil {
+				fmt.Println("ERROR: ", err)
+				return false
+			}
+
+			err = s3Cli.S3Session.WaitUntilBucketExists(&s3.HeadBucketInput{
+				Bucket: aws.String(tgt.Bucket),
+			})
+
+			if err != nil {
+				fmt.Println("ERROR: ", err)
+				return false
+			}
+		}
+
+	}
+
+	return true
+}
+
+func createFiles() bool {
+
+	fmt.Println("STEP: Create Required Files")
+	var (
+		content  string
+		fileName string
+	)
+
+	err := os.Mkdir(FolderName, 0777)
+
+	if err != nil {
+		fmt.Println("ERROR: ", err)
+		return false
+	}
+
+	for i := 0; i < NoOfObjects; i++ {
+		content = generateRandomString(100)
+		fileName = FolderName + "/" + strings.ToLower(generateRandomString(6)) + ".txt"
+		f, err := os.Create(fileName)
+
+		if err != nil {
+			fmt.Println("ERROR: ", err)
+			return false
+		}
+		defer f.Close()
+
+		_, err = f.WriteString(content)
+		if err != nil {
+			fmt.Println("ERROR: ", err)
+			return false
+		}
+	}
+	return true
+}
+
+func deleteFiles() bool {
+	fmt.Println("STEP: Delete created Files")
+	err := os.RemoveAll(FolderName)
+	if err != nil {
+		fmt.Println("ERROR: ", err)
+		return false
+	}
+	err = os.RemoveAll("spec.yaml")
+	if err != nil {
+		fmt.Println("ERROR: ", err)
+		return false
+	}
+	return true
+}
+
+func uploadObjects(spec Spec) bool {
+
+	fmt.Println("STEP: UploaOjects to Buckets")
+	var filePath string
+	files, err := ioutil.ReadDir(FolderName)
+	if err != nil {
+		fmt.Println("ERROR: ", err)
+		return false
+	}
+
+	bxCli, err := client.NewClientWithEnv(APIKey, client.DefaultEnv, Debug)
+
+	if err != nil {
+		fmt.Println("ERROR: ", err)
+		return false
+	}
+
+	for _, src := range spec {
+
+		s3Cli, err := client.NewS3Client(bxCli, src.Cos, src.Region)
+		if err != nil {
+			fmt.Println("ERROR: ", err)
+			return false
+		}
+		for _, f := range files {
+			filePath = FolderName + "/" + f.Name()
+			fmt.Println("STEP: Uploading File ", filePath, " To Bucket ", src.Bucket)
+			err = s3Cli.UploadObject(filePath, f.Name(), src.Bucket)
+			if err != nil {
+				fmt.Println("ERROR: ", err)
+				return false
+			}
+		}
+	}
+
+	return true
+
+}
+
+func createResources(spec Spec) bool {
+
+	if !createSpecFile(spec) {
+		return false
+	}
+
+	if !createCOSInstances(spec) {
+		return false
+	}
+
+	if !createBuckets(spec) {
+		return false
+	}
+
+	if !createFiles() {
+		return false
+	}
+
+	if !uploadObjects(spec) {
+		return false
+	}
+
+	return true
+}
+
+func deleteResources(spec Spec) bool {
+	if !deleteCOSInstances(spec) {
+		return false
+	}
+
+	if !deleteFiles() {
+		return false
+	}
 	return true
 }
 
@@ -164,11 +436,13 @@ var _ = CMDDescribe("pvsadm image sync tests", func() {
 		Expect(stderr).To(ContainSubstring(`no such file or directory`))
 	})
 
-	Context("Copy Objects between buckets", func() {
+	It("Copy Object Between Buckets", func() {})
+	spec := generateStruct()
+	res := createResources(spec)
+	Expect(res).To(BeTrue())
+	status, _, _ := runSyncCMD("--spec-file", "spec.yaml")
+	Expect(status).To(Equal(0))
+	res = deleteResources(spec)
+	Expect(res).To(BeTrue())
 
-		It("has 0 items", func() {})
-		// It("has 0 units", func() {})
-		_ = createRequiredBuckets()
-		Specify("the total amount is 0.00", func() {})
-	})
 })

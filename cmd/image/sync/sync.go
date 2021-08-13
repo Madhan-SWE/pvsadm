@@ -15,7 +15,6 @@
 package sync
 
 import (
-	"fmt"
 	"io/ioutil"
 
 	"github.com/ppc64le-cloud/pvsadm/pkg"
@@ -141,7 +140,7 @@ Sample spec.yaml file:
 				return err
 			}
 
-			fmt.Println("Selected Objects:", selectedObjects)
+			klog.Infoln("Selected Objects:", selectedObjects)
 
 			for _, targetItem := range item.Target {
 				s3Cli, err = client.NewS3Client(bxCli, item.Source.Cos, targetItem.Region)
