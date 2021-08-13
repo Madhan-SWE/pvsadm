@@ -436,13 +436,14 @@ var _ = CMDDescribe("pvsadm image sync tests", func() {
 		Expect(stderr).To(ContainSubstring(`no such file or directory`))
 	})
 
-	It("Copy Object Between Buckets", func() {})
-	spec := generateStruct()
-	res := createResources(spec)
-	Expect(res).To(BeTrue())
-	status, _, _ := runSyncCMD("--spec-file", "spec.yaml")
-	Expect(status).To(Equal(0))
-	res = deleteResources(spec)
-	Expect(res).To(BeTrue())
+	It("Copy Object Between Buckets", func() {
+		spec := generateStruct()
+		res := createResources(spec)
+		Expect(res).To(BeTrue())
+		status, _, _ := runSyncCMD("--spec-file", "spec.yaml")
+		Expect(status).To(Equal(0))
+		res = deleteResources(spec)
+		Expect(res).To(BeTrue())
+	})
 
 })
